@@ -1,0 +1,11 @@
+[general]
+
+root = "/home/rodlin/Desktop/os0/build0/system"
+revision = "systemd"
+book = "/home/rodlin/Desktop/os0/build0/8.3"
+target = "x86_64-lfs-linux-gnu"
+work-dir = "build0"
+
+[download]
+
+use-mirror = "https://mirror-hk.koddos.net/lfs/lfs-packages/"
