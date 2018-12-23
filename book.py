@@ -70,10 +70,12 @@ class Patch(Package):
         return "<patch '{}' at {} ({})>".format(self.name, self.url, self.file)
 
 class Step():
-    def __init__(self, name, package, scripts):
+    def __init__(self, name, package, scripts, sbu, rev):
         self.name = name
         self.package = package
         self.scripts = scripts
+        self.sbu = sbu
+        self.rev = rev
 
     def __str__(self):
         return "<step '{}' with {}, {} command(s)>".format(self.name, self.package, len(self.scripts))
@@ -89,6 +91,9 @@ class Step():
         return canon_name
 
     def gen_build_script(self):
+        # filter out test commands
+        # scripts = filter(lambda a: a.type != "test", self.scripts)
+
         script = """#!/bin/bash
 
 set +h
@@ -192,14 +197,24 @@ class Book:
                 pname = xml.find("sect1info/productname").text
                 url = xml.find("sect1info/address").text
                 package = self.find_package_by_url(url)
+                sbu = xml.find("//sect2[@role='package']/segmentedlist/seglistitem/seg").text
+                rev = xml.getroot().get("revision")
 
                 if not package:
                     raise Exception("unregistered package " + pname)
 
                 scripts = [ Command(cmd.text, cmd.get("remap")) for cmd in xml.findall("//screen/userinput") ]
 
-                steps.append(Step(name, package, scripts))
+                steps.append(Step(name, package, scripts, sbu, rev))
 
         # print(*steps, sep = "\n")
 
         return steps
+
+    # filter/alter scripts
+    def map_script(self, f):
+        for step in self.toolchain_steps:
+            step.scripts = f(step.scripts)
+
+        for step in self.system_steps:
+            step.scripts = f(step.scripts)

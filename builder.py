@@ -7,6 +7,47 @@ CONF_TOOLS_DIR = "tools"
 CONF_WORK_SCRIPTS_DIR = "scripts"
 CONF_WORK_FLAGS_DIR = "flags"
 
+CONF_WORK_PROG_SH = "progress.sh"
+
+PROGRESS_SH = b"""#!/bin/bash
+
+if [ -z "$1" ]; then
+    echo "need one argument"
+    exit 1
+fi
+
+beautify_date() {
+    date -d@$1 -u +%H:%M:%S
+}
+
+progress() {
+    SECONDS=0
+    while true; do
+        echo -ne "\\rtime elapsed: `beautify_date $SECONDS`"
+        sleep 0.5
+    done
+}
+
+wait() {
+    while [ -e /proc/$1 ]; do
+        sleep 0.1
+    done
+}
+
+progress &
+PROG_PID=$!
+
+bash -c "$1"
+EXIT=$?
+
+kill $PROG_PID # kill progress
+echo ""
+
+if [ $EXIT != 0 ]; then
+    exit 1
+fi
+"""
+
 # need to set global var
 # LFS
 # LFS_TGT
@@ -32,6 +73,26 @@ class Builder:
             else:
                 self.conf_mirror = None
 
+        if "build" in config:
+            if "make-job" in config["build"]:
+                self.conf_make_job = config["build"]["make-job"]
+            else:
+                self.conf_make_job = None
+
+        def script_alter(scripts):
+            scripts = list(filter(lambda a: a.type != "test", scripts))
+
+            if self.conf_make_job is not None:
+                for cmd in scripts:
+                    if cmd.cmd == "make":
+                        cmd.cmd = "make -j" + str(self.conf_make_job)
+
+            # print(scripts)
+
+            return scripts
+
+        self.book.map_script(script_alter)
+
     def init_root(self):
         if os.path.isdir(self.conf_root):
             if not os.path.isdir(self.conf_sources):
@@ -48,6 +109,9 @@ class Builder:
         mkdir(self.conf_work)
         mkdir(self.conf_work_scripts)
         mkdir(self.conf_work_flags)
+
+        with open(self.conf_work + "/" + CONF_WORK_PROG_SH, "wb") as fp:
+            fp.write(PROGRESS_SH)
 
         symlink = "/" + CONF_TOOLS_DIR
 
@@ -69,7 +133,7 @@ class Builder:
                 raise Exception("failed to fetch patch" + str(patch))
 
     def gen_env_header(self):
-        return "LFS='{}' LFS_TGT='{}'".format(self.conf_root, self.conf_target)
+        return "LFS='{}' LFS_TGT='{}' PATH=/tools/bin:${{PATH}}".format(self.conf_root, self.conf_target)
 
     # generate makefile for toolchain
     def gen_toolchain_makefile(self):
@@ -89,6 +153,12 @@ class Builder:
         #     else:
         #         raise Exception("unrecognized compression for " + fname)
 
+        def strip_ext(fname):
+            fname, ext = os.path.splitext(fname)
+            if ext == "" or ext == ".tar" or ext == ".tgz" or ext == ".txz" or ext == ".tbz": return fname
+            else: return strip_ext(fname)
+
+        targets = []
         makefile = []
 
         for step in self.book.toolchain_steps:
@@ -102,23 +172,47 @@ class Builder:
             with open(fname, "wb") as fp:
                 fp.write(script.encode("utf-8"))
 
+            # create tmp directory
+            # tmp
+            # tar -xf file -C tmp
+            # mv tmp/* ./build
+
             mf_trunk = \
-                "{flags}/build-{id}: {package}\n\t" + \
+                "{target}: {package}{dep}\n\t" + \
                 "\n\t".join([
-                    "mkdir -p '{sources}/build'",
-                    "tar -xf '{package}' -C '{sources}/build'",
-                    "cd '{sources}'/build/* && {header} bash {script}",
-                    "rm -r '{sources}/build'",
-                    "touch '{flags}/build-{id}'"
+                    "@echo '#############################'",
+                    "@echo preparing {step_name}",
+                    "@rm -rf '{sources}/tmp' '{sources}/build'",
+                    "@mkdir '{sources}/tmp'",
+                    "@tar -xf '{package}' -C '{sources}/tmp'",
+                    "@mv '{sources}/tmp'/* '{sources}/build'",
+                    "@echo building {step_name}, estimated {sbu}",
+                    "@bash {progress} \"cd '{sources}/build' && {header} bash {script} 1>/dev/null 2>/dev/null\"",
+                    "@echo built {step_name}",
+                    "@rm -rf '{sources}/tmp' '{sources}/build'",
+                    "@touch '{target}'"
                 ])
+
+            target = self.conf_work_flags + "/build-" + id
 
             mf_trunk = mf_trunk.format(
                 sources = self.conf_sources,
                 package = package_fname, id = id,
                 script = fname,
                 header = self.gen_env_header(),
-                flags = self.conf_work_flags)
+                flags = self.conf_work_flags,
+                target = target,
+                dep = " " + targets[-1] if len(targets) else "",
+                # source_dir = strip_ext(package_fname),
+                progress = self.conf_work + "/" + CONF_WORK_PROG_SH,
+                step_name = step.name,
+                sbu = step.sbu)
 
+            targets.append(target)
             makefile.append(mf_trunk)
 
-        print("\n\n".join(makefile))
+        last_target = " " + targets[-1] if len(targets) else ""
+
+        with open(self.conf_work + "/makefile", "wb") as fp:
+            fp.write(("all:" + last_target + "\n\n").encode("utf-8"))
+            fp.write(("\n\n".join(makefile) + "\n").encode("utf-8"))

@@ -9,3 +9,7 @@ work-dir = "build0"
 [download]
 
 use-mirror = "https://mirror-hk.koddos.net/lfs/lfs-packages/"
+
+[build]
+
+make-job = 6
